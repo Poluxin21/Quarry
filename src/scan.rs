@@ -176,6 +176,73 @@ pub fn next_scan_job(
     matches
 }
 
+/// Primeira busca de string: procura o padrao de bytes em todas as regioes.
+pub fn first_scan_string_job(
+    handle: HANDLE,
+    regions: &[Region],
+    pattern: &[u8],
+    progress: &ScanProgress,
+) -> Vec<Match> {
+    let mut matches = Vec::new();
+    if pattern.is_empty() {
+        return matches;
+    }
+    let first = pattern[0];
+    let mut buf: Vec<u8> = Vec::new();
+
+    for region in regions {
+        if progress.cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        buf.clear();
+        buf.resize(region.size, 0);
+        if memory::read_into(handle, region.base, &mut buf) && region.size >= pattern.len() {
+            let end = region.size - pattern.len();
+            let mut i = 0usize;
+            while i <= end {
+                if buf[i] == first && &buf[i..i + pattern.len()] == pattern {
+                    matches.push(Match {
+                        address: region.base + i as u64,
+                        last: 0.0,
+                    });
+                }
+                i += 1;
+            }
+        }
+        progress.done.fetch_add(1, Ordering::Relaxed);
+        progress.matches.store(matches.len(), Ordering::Relaxed);
+    }
+    matches
+}
+
+/// Busca seguinte de string: mantem os enderecos que ainda contem o texto.
+pub fn next_scan_string_job(
+    handle: HANDLE,
+    mut matches: Vec<Match>,
+    pattern: &[u8],
+    progress: &ScanProgress,
+) -> Vec<Match> {
+    if pattern.is_empty() {
+        return matches;
+    }
+    let mut buf = vec![0u8; pattern.len()];
+    let mut processed = 0usize;
+
+    matches.retain_mut(|m| {
+        if progress.cancel.load(Ordering::Relaxed) {
+            return true;
+        }
+        processed += 1;
+        if processed % 4096 == 0 {
+            progress.done.store(processed, Ordering::Relaxed);
+        }
+        memory::read_into(handle, m.address, &mut buf) && buf == pattern
+    });
+    progress.done.store(processed, Ordering::Relaxed);
+    progress.matches.store(matches.len(), Ordering::Relaxed);
+    matches
+}
+
 /// `current` = valor atual lido; `target` = valor digitado; `previous` = valor anterior.
 fn compare(kind: ScanKind, current: f64, target: f64, previous: f64) -> bool {
     match kind {

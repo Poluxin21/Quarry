@@ -55,6 +55,19 @@ struct SavedEntry {
     edit_text: String,
     /// se presente, o endereco e resolvido dinamicamente por esta cadeia.
     pointer: Option<PtrPath>,
+    /// numero de bytes a ler para tipos string (0 para tipos numericos).
+    str_len: usize,
+}
+
+impl SavedEntry {
+    /// Quantos bytes ler/escrever para exibir o valor desta entrada.
+    fn read_len(&self) -> usize {
+        if self.value_type.is_string() {
+            self.str_len
+        } else {
+            self.value_type.size()
+        }
+    }
 }
 
 /// Alvos congelados compartilhados com a thread de freeze.
@@ -254,6 +267,12 @@ impl App {
             self.status = "Anexe um processo primeiro.".into();
             return;
         };
+
+        if self.value_type.is_string() {
+            self.start_string_scan(h, false);
+            return;
+        }
+
         let target = self.parse_target();
         if self.scan_kind.needs_value() && target.is_none() {
             self.status = "Valor invalido para o tipo selecionado.".into();
@@ -292,6 +311,42 @@ impl App {
         self.status = "First scan em andamento...".into();
     }
 
+    /// Dispara um scan de string (first ou next) numa thread de fundo.
+    fn start_string_scan(&mut self, h: Arc<OpenProcessHandle>, is_next: bool) {
+        let Some(pattern) = self.value_type.parse_to_bytes(&self.value_text) else {
+            self.status = "Texto invalido.".into();
+            return;
+        };
+        if pattern.is_empty() {
+            self.status = "Digite um texto para procurar.".into();
+            return;
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        if is_next {
+            let current = std::mem::take(&mut self.scanner.matches);
+            let progress = ScanProgress::new(current.len());
+            let prog = progress.clone();
+            std::thread::spawn(move || {
+                let result = scan::next_scan_string_job(h.raw(), current, &pattern, &prog);
+                let _ = tx.send(result);
+            });
+            self.scan_task = Some(ScanTask { progress, rx, is_next: true });
+            self.status = "Next scan (texto) em andamento...".into();
+        } else {
+            self.scanner = Scanner::new(self.value_type);
+            let regions = memory::enumerate_regions(h.raw());
+            let progress = ScanProgress::new(regions.len());
+            let prog = progress.clone();
+            std::thread::spawn(move || {
+                let result = scan::first_scan_string_job(h.raw(), &regions, &pattern, &prog);
+                let _ = tx.send(result);
+            });
+            self.scan_task = Some(ScanTask { progress, rx, is_next: false });
+            self.status = "First scan (texto) em andamento...".into();
+        }
+    }
+
     fn do_next_scan(&mut self) {
         if self.scan_task.is_some() {
             return;
@@ -303,6 +358,12 @@ impl App {
             self.status = "Faca um First Scan antes.".into();
             return;
         }
+
+        if self.value_type.is_string() {
+            self.start_string_scan(h, true);
+            return;
+        }
+
         let target = self.parse_target();
         if self.scan_kind.needs_value() && target.is_none() {
             self.status = "Valor invalido.".into();
@@ -532,6 +593,12 @@ impl App {
         ui.heading("Busca de valores");
         ui.add_space(4.0);
 
+        let is_string = self.value_type.is_string();
+        if is_string {
+            // strings so suportam busca por texto exato
+            self.scan_kind = ScanKind::Exact;
+        }
+
         egui::Grid::new("scan_controls")
             .num_columns(2)
             .spacing([8.0, 6.0])
@@ -547,28 +614,34 @@ impl App {
                 ui.end_row();
 
                 ui.label("Comparacao:");
-                egui::ComboBox::from_id_source("sk")
-                    .selected_text(scan_kind_label(self.scan_kind))
-                    .show_ui(ui, |ui| {
-                        use ScanKind::*;
-                        for k in [
-                            Exact, BiggerThan, SmallerThan, Changed, Unchanged, Increased,
-                            Decreased,
-                        ] {
-                            ui.selectable_value(&mut self.scan_kind, k, scan_kind_label(k));
-                        }
-                    });
+                if is_string {
+                    ui.add_enabled(false, egui::Button::new("Texto exato"));
+                } else {
+                    egui::ComboBox::from_id_source("sk")
+                        .selected_text(scan_kind_label(self.scan_kind))
+                        .show_ui(ui, |ui| {
+                            use ScanKind::*;
+                            for k in [
+                                Exact, BiggerThan, SmallerThan, Changed, Unchanged, Increased,
+                                Decreased,
+                            ] {
+                                ui.selectable_value(&mut self.scan_kind, k, scan_kind_label(k));
+                            }
+                        });
+                }
                 ui.end_row();
 
-                ui.label("Valor:");
+                ui.label(if is_string { "Texto:" } else { "Valor:" });
                 ui.add_enabled(
-                    self.scan_kind.needs_value(),
+                    is_string || self.scan_kind.needs_value(),
                     egui::TextEdit::singleline(&mut self.value_text),
                 );
                 ui.end_row();
             });
 
-        ui.checkbox(&mut self.fast_scan, "Fast scan (alinhado — mais rapido)");
+        ui.add_enabled_ui(!is_string, |ui| {
+            ui.checkbox(&mut self.fast_scan, "Fast scan (alinhado — mais rapido)");
+        });
 
         ui.add_space(6.0);
         let scanning = self.scan_task.is_some();
@@ -614,8 +687,18 @@ impl App {
         let total = self.scanner.matches.len();
         ui.label(format!("Resultados: {total} (mostrando ate 1000)"));
 
+        // comprimento de leitura: fixo para numeros, tamanho do texto para strings
+        let read_len = if is_string {
+            self.value_type
+                .parse_to_bytes(&self.value_text)
+                .map(|b| b.len())
+                .unwrap_or(0)
+        } else {
+            self.value_type.size()
+        };
+
         let handle = self.attached.clone();
-        let mut add_addr: Option<(u64, ValueType)> = None;
+        let mut add_addr: Option<(u64, ValueType, usize)> = None;
         egui::ScrollArea::vertical().show(ui, |ui| {
             egui::Grid::new("results")
                 .num_columns(3)
@@ -627,23 +710,25 @@ impl App {
                     ui.end_row();
                     for m in self.scanner.matches.iter().take(1000) {
                         ui.monospace(format!("{:016X}", m.address));
-                        let cur = handle
-                            .as_ref()
-                            .and_then(|h| {
-                                memory::read_bytes(h.raw(), m.address, self.value_type.size())
-                            })
-                            .map(|b| self.value_type.format(&b))
-                            .unwrap_or_else(|| "?".into());
+                        let cur = if read_len == 0 {
+                            "?".into()
+                        } else {
+                            handle
+                                .as_ref()
+                                .and_then(|h| memory::read_bytes(h.raw(), m.address, read_len))
+                                .map(|b| self.value_type.format(&b))
+                                .unwrap_or_else(|| "?".into())
+                        };
                         ui.monospace(cur);
                         if ui.small_button("+ tabela").clicked() {
-                            add_addr = Some((m.address, self.value_type));
+                            add_addr = Some((m.address, self.value_type, read_len));
                         }
                         ui.end_row();
                     }
                 });
         });
 
-        if let Some((address, vt)) = add_addr {
+        if let Some((address, vt, str_len)) = add_addr {
             self.saved.push(SavedEntry {
                 address,
                 value_type: vt,
@@ -651,6 +736,7 @@ impl App {
                 frozen: false,
                 edit_text: String::new(),
                 pointer: None,
+                str_len,
             });
         }
     }
@@ -691,12 +777,17 @@ impl App {
                         ui.text_edit_singleline(&mut e.desc);
                     });
                     ui.horizontal(|ui| {
-                        let cur = handle
-                            .as_ref()
-                            .zip(resolved)
-                            .and_then(|(h, a)| memory::read_bytes(h.raw(), a, e.value_type.size()))
-                            .map(|b| e.value_type.format(&b))
-                            .unwrap_or_else(|| "?".into());
+                        let len = e.read_len();
+                        let cur = if len == 0 {
+                            "?".into()
+                        } else {
+                            handle
+                                .as_ref()
+                                .zip(resolved)
+                                .and_then(|(h, a)| memory::read_bytes(h.raw(), a, len))
+                                .map(|b| e.value_type.format(&b))
+                                .unwrap_or_else(|| "?".into())
+                        };
                         ui.label("Atual:");
                         ui.monospace(cur);
                     });
@@ -854,6 +945,7 @@ impl App {
                 frozen: false,
                 edit_text: String::new(),
                 pointer: Some(path),
+                str_len: 0,
             });
             self.status = "Cadeia adicionada à cheat table (endereço resolvido dinamicamente).".into();
         }

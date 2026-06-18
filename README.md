@@ -16,7 +16,7 @@ procurar valores, alterá-los e injetar código — com foco em ser simples de u
 
 | Aba | O que faz |
 |-----|-----------|
-| **Busca** | First/Next scan em thread de fundo (com barra de progresso e cancelar). Tipos `i8`–`u64`, `f32`, `f64`. Comparações: valor exato, maior/menor, mudou, não mudou, aumentou, diminuiu. |
+| **Busca** | First/Next scan em thread de fundo (com barra de progresso e cancelar). Tipos `i8`–`u64`, `f32`, `f64` e **strings** (UTF-8/ASCII e UTF-16/Unicode). Comparações: valor exato, maior/menor, mudou, não mudou, aumentou, diminuiu. |
 | **Cheat Table** | Salva endereços, mostra o valor em tempo real, escreve e **congela** valores. |
 | **Pointer Scan** | Encontra cadeias de ponteiros estáveis (`["game.exe"+1A2B]+10+8`) que sempre levam ao endereço, mesmo após reiniciar o jogo — e as resolve dinamicamente. |
 | **Auto Assembler** | Scripts estilo Cheat Engine (`[ENABLE]`/`[DISABLE]`): `aobscanmodule`, `alloc` de code cave perto do alvo, `label`, `db`, `jmp`/`call`/`jmp64`, `dq`/`dd`, `dealloc`. Aplica e desfaz patches. |
