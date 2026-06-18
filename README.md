@@ -41,7 +41,7 @@ funcionam de forma confiável entre execuções.
 ## Compilar e rodar
 
 ```powershell
-git clone https://github.com/<seu-usuario>/opence.git
+git clone https://github.com/Poluxin21/opence.git
 cd opence
 cargo run --release
 ```
