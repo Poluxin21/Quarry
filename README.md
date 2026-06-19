@@ -23,6 +23,12 @@ toca no processo e funciona mesmo com anti-cheat kernel).
 | **Pointer Scan** | Encontra cadeias de ponteiros estáveis (`["game.exe"+1A2B]+10+8`) que sempre levam ao endereço, mesmo após reiniciar o jogo — e as resolve dinamicamente. |
 | **Auto Assembler** | Scripts estilo Cheat Engine (`[ENABLE]`/`[DISABLE]`): `aobscanmodule`, `alloc` de code cave perto do alvo, `label`, `db`, `jmp`/`call`/`jmp64`, `dq`/`dd`, `dealloc`. Aplica e desfaz patches. |
 | **Injeção** | Lista módulos, AOB scan (com curinga `??`), patch de bytes, NOP e injeção de DLL (`LoadLibraryW` + `CreateRemoteThread`). |
+| **Proxy HTTPS** *(Kernel Exploring)* | Proxy de interceptação com CA própria: **Histórico**, **Intercept** (pausar/editar/forward), **Repeater** e **Match & Replace**. Não toca no processo. Veja [Proxy HTTPS](#proxy-https-kernel-exploring). |
+
+> O Quarry separa as funções em duas seções: **General Exploring** (acessa o
+> processo: busca, pointer scan, assembler, injeção) e **Kernel Exploring**
+> (não toca no processo: proxy HTTPS), com detecção de anti-cheat que bloqueia a
+> injeção e roteia para a seção segura quando detecta um anti-cheat kernel.
 
 ## Por que pointer scan importa
 
@@ -78,6 +84,8 @@ src/
   pointer.rs   pointer scanner (busca reversa de cadeias)
   assembler.rs auto assembler (scripts de code cave / patch)
   inject.rs    módulos, AOB scan, patch/NOP, injeção de DLL
+  anticheat.rs detecção de anti-cheat e roteamento Kernel/General
+  proxy.rs     proxy HTTPS de interceptação (MITM com CA própria)
 ```
 
 ## Auto Assembler
@@ -106,6 +114,68 @@ dealloc(newmem)
 
 Números: `0x..` ou `$..` = hex, sem prefixo = decimal. Para instruções que o
 montador não gera, use `db` com os bytes crus.
+
+## Proxy HTTPS (Kernel Exploring)
+
+A seção **Kernel Exploring** traz um proxy de interceptação estilo Burp que
+**não toca no processo** — funciona com qualquer alvo, inclusive sob anti-cheat
+kernel. Ele intercepta apenas tráfego **HTTP(S)** (login, loja, matchmaking,
+APIs); o tráfego de jogo em tempo real (UDP/binário próprio) não passa por aqui.
+
+### 1. Iniciar o proxy
+
+Aba **Proxy HTTPS** → defina a porta (padrão `8080`) → **Iniciar**. Na primeira
+execução o Quarry gera, no diretório de trabalho:
+
+- **`quarry-ca.pem`** — o certificado da CA (é este que você instala);
+- **`quarry-ca.key.pem`** — a chave privada da CA (**mantenha em segredo, nunca
+  compartilhe**: quem tiver ela consegue forjar HTTPS para quem confia na sua CA).
+
+### 2. Instalar a CA (`quarry-ca.pem`)
+
+Para ler HTTPS o proxy faz MITM: apresenta ao alvo um certificado *daquele host*
+assinado pela sua CA. O cliente só aceita se **confiar na CA** — por isso a
+instalação. Sem ela, o TLS quebra com erro de certificado.
+
+```powershell
+# Por usuário (não precisa de admin) — basta se o jogo roda com o seu usuário:
+certutil -addstore -user Root quarry-ca.pem
+
+# Para a máquina inteira (precisa de admin):
+certutil -addstore Root quarry-ca.pem
+```
+
+Ou pela interface gráfica: renomeie para `quarry-ca.crt`, duplo-clique →
+*Instalar Certificado* → *Autoridades de Certificação Raiz Confiáveis*.
+
+Quando terminar, **remova a CA** (recomendado — é um root CA poderoso):
+
+```powershell
+certutil -delstore -user Root "Quarry Proxy CA"
+```
+
+### 3. Apontar o jogo para o proxy
+
+O proxy escuta em `127.0.0.1:<porta>`. Para mirar **só um jogo/processo**:
+
+| Método | Mira 1 processo? | Como |
+|--------|------------------|------|
+| **Proxifier / ProxyCap** | ✅ Sim (recomendado) | Crie uma regra `jogo.exe → proxy HTTP 127.0.0.1:8080`. Força o TCP daquele executável pelo proxy mesmo que o jogo não tenha configuração de proxy. |
+| Proxy do sistema (Configurações → Rede → Proxy) | ❌ Pega tudo | Rápido para teste amplo, mas muitos jogos ignoram o proxy do sistema. |
+| `HTTP_PROXY` / `HTTPS_PROXY` | ⚠️ Só se o app respeitar | Útil para launchers Chromium e SDKs; jogos raramente honram. |
+
+Com a CA instalada e o tráfego apontado, o **Histórico** enche com as
+requisições; ligue o **Intercept** para pausar/editar antes de enviar (botão
+direito no *Forward* para interceptar também a resposta), use o **Repeater**
+para reenviar requisições editadas, ou crie regras automáticas em
+**Match & Replace**.
+
+### Limitações
+
+- **Certificate pinning**: vários jogos competitivos ignoram a trust store e só
+  aceitam o próprio certificado — o MITM falha mesmo com a CA instalada.
+- **Tráfego não-HTTP** (a maior parte do gameplay, em UDP) não passa por um proxy
+  HTTP e não aparece aqui.
 
 ## Roadmap
 
