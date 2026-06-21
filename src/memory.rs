@@ -41,6 +41,55 @@ pub fn read_bytes(handle: HANDLE, address: u64, len: usize) -> Option<Vec<u8>> {
     }
 }
 
+/// Tamanho de bloco padrao para leitura em chunks (1 MiB).
+pub const CHUNK: usize = 1024 * 1024;
+
+/// Le uma regiao grande em blocos de `CHUNK` bytes, chamando `f(abs_offset, &dados)`
+/// para cada bloco efetivamente lido. Blocos consecutivos se sobrepoem em `overlap`
+/// bytes para nao perder um match que cruze a fronteira (use `item_size - 1`).
+///
+/// Ao contrario de [`read_into`], aceita leituras parciais: paginas ilegiveis no
+/// meio da regiao apenas interrompem o bloco atual (o proximo bloco recomeca
+/// depois). Mantem a memoria limitada a ~`CHUNK` em vez de alocar a regiao inteira.
+pub fn read_chunked(
+    handle: HANDLE,
+    base: u64,
+    size: usize,
+    overlap: usize,
+    f: &mut dyn FnMut(u64, &[u8]),
+) {
+    if size == 0 {
+        return;
+    }
+    let step = CHUNK.saturating_sub(overlap).max(1);
+    let mut off = 0usize;
+    let mut buf = vec![0u8; CHUNK];
+    while off < size {
+        let want = CHUNK.min(size - off);
+        let mut read = 0usize;
+        let ok = unsafe {
+            ReadProcessMemory(
+                handle,
+                base.wrapping_add(off as u64) as *const c_void,
+                buf.as_mut_ptr() as *mut c_void,
+                want,
+                Some(&mut read),
+            )
+        };
+        if ok.is_ok() && read > 0 {
+            f(base.wrapping_add(off as u64), &buf[..read]);
+        }
+        if ok.is_ok() && read == want {
+            // bloco inteiro lido: avanca mantendo `overlap` bytes de sobreposicao
+            off += step;
+        } else {
+            // pagina ilegivel adiante: pula a pagina problematica e continua
+            // (um match nao pode cruzar uma pagina nao mapeada, entao nao ha perda)
+            off += read.max(1) + 0x1000;
+        }
+    }
+}
+
 /// Le exatamente `buf.len()` bytes para dentro de `buf`. true se leu tudo.
 pub fn read_into(handle: HANDLE, address: u64, buf: &mut [u8]) -> bool {
     let mut read = 0usize;

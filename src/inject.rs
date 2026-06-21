@@ -2,6 +2,7 @@
 //! alocacao remota e injecao de DLL.
 
 use std::ffi::c_void;
+use std::sync::atomic::Ordering;
 
 use windows::core::{s, w, Result};
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
@@ -20,6 +21,7 @@ use windows::Win32::System::Threading::{
 };
 
 use crate::memory::{self, Region};
+use crate::scan::ScanProgress;
 
 /// Um modulo carregado no processo alvo (ex: game.exe, kernel32.dll).
 #[derive(Clone, Debug)]
@@ -105,30 +107,80 @@ pub fn aob_scan(
     limit: usize,
 ) -> Vec<u64> {
     let mut found = Vec::new();
-    let mut buf: Vec<u8> = Vec::new();
+    if pat.is_empty() {
+        return found;
+    }
+    let plen = pat.len();
     for region in regions {
         if found.len() >= limit {
             break;
         }
-        buf.clear();
-        buf.resize(region.size, 0);
-        if !memory::read_into(handle, region.base, &mut buf) {
-            continue;
-        }
-        if buf.len() < pat.len() {
-            continue;
-        }
-        let end = buf.len() - pat.len();
-        let mut i = 0usize;
-        while i <= end {
-            if matches_at(&buf[i..], pat) {
-                found.push(region.base + i as u64);
-                if found.len() >= limit {
-                    break;
-                }
+        let mut last_match: Option<u64> = None;
+        memory::read_chunked(handle, region.base, region.size, plen - 1, &mut |cabs, data| {
+            if found.len() >= limit || data.len() < plen {
+                return;
             }
-            i += 1;
+            let end = data.len() - plen;
+            let mut i = 0usize;
+            while i <= end {
+                if matches_at(&data[i..], pat) {
+                    let addr = cabs + i as u64;
+                    if last_match.map_or(true, |l| addr > l) {
+                        found.push(addr);
+                        last_match = Some(addr);
+                        if found.len() >= limit {
+                            break;
+                        }
+                    }
+                }
+                i += 1;
+            }
+        });
+    }
+    found
+}
+
+/// Igual a [`aob_scan`], mas roda reportando progresso e atendendo cancelamento
+/// (para execucao numa thread de fundo, reusando [`ScanProgress`]).
+pub fn aob_scan_job(
+    handle: HANDLE,
+    regions: &[Region],
+    pat: &[Option<u8>],
+    limit: usize,
+    progress: &ScanProgress,
+) -> Vec<u64> {
+    let mut found = Vec::new();
+    if pat.is_empty() {
+        return found;
+    }
+    let plen = pat.len();
+    for region in regions {
+        if progress.cancel.load(Ordering::Relaxed) || found.len() >= limit {
+            break;
         }
+        let mut last_match: Option<u64> = None;
+        memory::read_chunked(handle, region.base, region.size, plen - 1, &mut |cabs, data| {
+            if found.len() >= limit || data.len() < plen {
+                return;
+            }
+            let end = data.len() - plen;
+            let mut i = 0usize;
+            while i <= end {
+                if matches_at(&data[i..], pat) {
+                    let addr = cabs + i as u64;
+                    if last_match.map_or(true, |l| addr > l) {
+                        found.push(addr);
+                        last_match = Some(addr);
+                        if found.len() >= limit {
+                            break;
+                        }
+                    }
+                }
+                i += 1;
+            }
+        });
+        progress.done.fetch_add(1, Ordering::Relaxed);
+        progress.matches.store(found.len(), Ordering::Relaxed);
     }
     found
 }

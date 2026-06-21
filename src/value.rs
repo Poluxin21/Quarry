@@ -1,6 +1,8 @@
 //! Tipos de valor suportados pelo scanner.
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum ValueType {
     I8,
     I16,
@@ -34,6 +36,30 @@ impl ValueType {
 
     pub fn is_string(&self) -> bool {
         matches!(self, ValueType::StringUtf8 | ValueType::StringUtf16)
+    }
+
+    /// True para os tipos de ponto flutuante (comparados em f64).
+    pub fn is_float(&self) -> bool {
+        matches!(self, ValueType::F32 | ValueType::F64)
+    }
+
+    /// Le os bytes como inteiro de 128 bits (preciso ate u64/i64, sem perda).
+    /// None para tipos float/string ou bytes insuficientes.
+    pub fn read_i128(&self, bytes: &[u8]) -> Option<i128> {
+        if self.is_float() || self.is_string() || bytes.len() < self.size() {
+            return None;
+        }
+        Some(match self {
+            ValueType::I8 => i8::from_le_bytes(bytes[..1].try_into().ok()?) as i128,
+            ValueType::I16 => i16::from_le_bytes(bytes[..2].try_into().ok()?) as i128,
+            ValueType::I32 => i32::from_le_bytes(bytes[..4].try_into().ok()?) as i128,
+            ValueType::I64 => i64::from_le_bytes(bytes[..8].try_into().ok()?) as i128,
+            ValueType::U8 => u8::from_le_bytes(bytes[..1].try_into().ok()?) as i128,
+            ValueType::U16 => u16::from_le_bytes(bytes[..2].try_into().ok()?) as i128,
+            ValueType::U32 => u32::from_le_bytes(bytes[..4].try_into().ok()?) as i128,
+            ValueType::U64 => u64::from_le_bytes(bytes[..8].try_into().ok()?) as i128,
+            _ => return None,
+        })
     }
 
     /// Tamanho fixo em bytes do tipo. Para strings o tamanho depende do texto,

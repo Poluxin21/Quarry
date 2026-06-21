@@ -18,9 +18,10 @@ toca no processo e funciona mesmo com anti-cheat kernel).
 
 | Aba | O que faz |
 |-----|-----------|
-| **Busca** | First/Next scan em thread de fundo (com barra de progresso e cancelar). Tipos `i8`–`u64`, `f32`, `f64` e **strings** (UTF-8/ASCII e UTF-16/Unicode). Comparações: valor exato, maior/menor, mudou, não mudou, aumentou, diminuiu. |
-| **Cheat Table** | Salva endereços, mostra o valor em tempo real, escreve e **congela** valores. |
+| **Busca** | First/Next scan em thread de fundo (com barra de progresso e cancelar). Tipos `i8`–`u64`, `f32`, `f64` e **strings** (UTF-8/ASCII e UTF-16/Unicode). Comparações: valor exato, maior/menor, **entre (intervalo)**, mudou, não mudou, aumentou, diminuiu. Inteiros de 64 bits comparados com precisão total (sem perda de `f64`). |
+| **Cheat Table** | Salva endereços, mostra o valor em tempo real, escreve e **congela** valores. **Salva/carrega em arquivo `.qct`** (endereços, ponteiros, freeze e script do Auto Assembler). |
 | **Pointer Scan** | Encontra cadeias de ponteiros estáveis (`["game.exe"+1A2B]+10+8`) que sempre levam ao endereço, mesmo após reiniciar o jogo — e as resolve dinamicamente. |
+| **Memory Viewer** | Hex dump e **disassembly x86-64** ao vivo de qualquer endereço, com NOP/+tabela por instrução, e **"o que escreve/acessa este endereço"** (breakpoint de hardware via debugger) para achar a instrução que altera um valor. |
 | **Auto Assembler** | Scripts estilo Cheat Engine (`[ENABLE]`/`[DISABLE]`): `aobscanmodule`, `alloc` de code cave perto do alvo, `label`, `db`, `jmp`/`call`/`jmp64`, `dq`/`dd`, `dealloc`. Aplica e desfaz patches. |
 | **Injeção** | Lista módulos, AOB scan (com curinga `??`), patch de bytes, NOP e injeção de DLL (`LoadLibraryW` + `CreateRemoteThread`). |
 | **Proxy HTTPS** *(Kernel Exploring)* | Proxy de interceptação com CA própria: **Histórico**, **Intercept** (pausar/editar/forward), **Repeater** e **Match & Replace**. Não toca no processo. Veja [Proxy HTTPS](#proxy-https-kernel-exploring). |
@@ -80,8 +81,11 @@ src/
   process.rs   enumerar e abrir processos
   memory.rs    ler/escrever memória e enumerar regiões
   value.rs     tipos de valor (parse/format)
-  scan.rs      motor de busca (first/next scan)
+  scan.rs      motor de busca (first/next scan, leitura em chunks)
   pointer.rs   pointer scanner (busca reversa de cadeias)
+  table.rs     persistência da cheat table (.qct via serde)
+  disasm.rs    disassembler x86-64 (Memory Viewer, sobre iced-x86)
+  debugger.rs  "o que escreve aqui" (DebugActiveProcess + DR0–DR7)
   assembler.rs auto assembler (scripts de code cave / patch)
   inject.rs    módulos, AOB scan, patch/NOP, injeção de DLL
   anticheat.rs detecção de anti-cheat e roteamento Kernel/General
@@ -177,12 +181,46 @@ para reenviar requisições editadas, ou crie regras automáticas em
 - **Tráfego não-HTTP** (a maior parte do gameplay, em UDP) não passa por um proxy
   HTTP e não aparece aqui.
 
+## Memory Viewer e "o que escreve neste endereço"
+
+A aba **Memory Viewer** (General Exploring) mostra, ao vivo, o **hex dump** e o
+**disassembly x86-64** a partir de qualquer endereço (digite em hex e navegue com
+`−80`/`+80`). No disassembly cada instrução tem botões **NOP** e **+tabela**.
+
+O recurso **"o que escreve/acessa este endereço"** anexa o Quarry como *debugger*
+ao alvo e arma um **breakpoint de hardware** (registradores DR0–DR7) no endereço.
+Quando o jogo escreve ali, a instrução responsável (o `RIP`) aparece na lista com
+a contagem de disparos — é assim que se descobre, por exemplo, a linha de código
+que tira vida. Acione pelo botão **o que escreve** na Cheat Table ou no Memory
+Viewer; marque **incluir leituras** para também capturar acessos de leitura.
+
+> ⚠️ Anexar como debugger **pausa as threads brevemente e é detectável** por
+> anticheat — por isso fica disponível só na seção **General Exploring** (alvos
+> sem AC kernel). Há no máximo **4 breakpoints de hardware**; o Quarry usa o DR0.
+> Fechar o Quarry **não** mata o alvo (`DebugSetProcessKillOnExit(false)`).
+
+## Salvar/carregar a Cheat Table
+
+Na Cheat Table, **💾 Salvar tabela** / **📂 Carregar tabela** gravam e leem um
+arquivo **`.qct`** (JSON) com todas as entradas — endereços fixos, cadeias de
+ponteiro, tipo, descrição, valor e estado de *freeze* — além do script atual do
+Auto Assembler. Assim o trabalho sobrevive a reinícios do jogo e do Quarry.
+
 ## Roadmap
 
-- [ ] Salvar/carregar a cheat table em arquivo
+- [x] Salvar/carregar a cheat table em arquivo (`.qct`)
+- [x] Memory Viewer com disassembly x86-64
+- [x] "O que escreve/acessa este endereço" (breakpoints de hardware)
+- [x] AOB scan em thread de fundo
+- [x] Comparação por intervalo (entre X e Y) + precisão de inteiros 64-bit
+- [x] Hotkeys globais (congelar tudo / Auto Assembler enable-disable)
+- [x] Validação de pointer scan entre execuções
 - [ ] Scan de "valor inicial desconhecido"
-- [ ] Suporte a ponteiros de 32-bit
-- [ ] AOB scan em thread de fundo
+- [ ] Suporte a processos/ponteiros de 32-bit
+- [ ] Import de tabelas `.CT` do Cheat Engine
+- [ ] Camada de scripting (automação)
+- [ ] Hook de função (send/recv) + correlação memória ↔ rede
+- [ ] Dissector de Unity/Mono/.NET
 - [ ] Montador completo de mnemônicos (hoje o Auto Assembler usa `db` + diretivas)
 
 ## Tecnologias

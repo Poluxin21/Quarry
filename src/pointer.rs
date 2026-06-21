@@ -28,7 +28,7 @@ pub struct PtrScanParams {
 }
 
 /// Uma cadeia de ponteiros encontrada, do modulo ate o alvo.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct PtrPath {
     pub module: String,
     pub base_offset: u64,
